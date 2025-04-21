@@ -1,0 +1,452 @@
+% Interferometer Signal Processing using Quadrature Method with Simulation Support
+% Version: 4.8
+% Author: shoki222
+
+% Clear workspace and figures
+clear all; close all; clc;
+
+% Global variables for STFT parameters
+global STFT_PARAMS;
+STFT_PARAMS = struct('windowSize', 64, ...
+                     'overlap', 50, ...
+                     'nfft', 128, ...
+                     'windowType', 'hanning');
+
+% Constants
+c = 299792458;                % Speed of light [m/s]
+lambda_sig = 1550.120e-9;     % Default signal laser wavelength [m]
+lambda_ref = 1550.150e-9;     % Default reference laser wavelength [m]
+
+% Load simulated data
+try
+    load('simulated_signals.mat');
+    fprintf('Simulation data loaded successfully.\n');
+    
+    % Check if wavelengths exist in the loaded data
+    if ~exist('lambda_sig', 'var') || ~exist('lambda_ref', 'var')
+        fprintf('Warning: Using default wavelengths:\n');
+        fprintf('lambda_sig = %.6f nm\n', lambda_sig*1e9);
+        fprintf('lambda_ref = %.6f nm\n', lambda_ref*1e9);
+    end
+    
+    if ~exist('simulation_type', 'var')
+        simulation_type = 1;  % Default to Ramp if not specified
+    end
+    
+    % Try to load intensity variations if they exist
+    try
+        load('intensity_variations.mat', 'intensity_variations');
+        has_intensity_data = true;
+    catch
+        has_intensity_data = false;
+    end
+catch ME
+    error('Error loading simulation data: %s', ME.message);
+end
+
+% Calculate frequencies
+f_sig = c/lambda_sig;
+f_ref = c/lambda_ref;
+f_offset = f_sig - f_ref;  % Changed to maintain sign
+
+% Calculate sampling parameters
+dt = t(2) - t(1);
+Fs = 1/dt;
+
+% Calculate quadrature signals
+conversion_matrix = [2/3, -1/3, -1/3;
+                    0, 1/sqrt(3), -1/sqrt(3)];
+signals = [signal1(:), signal2(:), signal3(:)];
+IQ = (conversion_matrix * signals.').';
+
+I = IQ(:,1);
+Q = IQ(:,2);
+
+% Phase calculation and velocity calculations
+phase = unwrap(atan2(Q, I));
+t_freq = t;
+inst_freq = gradient(phase) / (2*pi*dt);
+raw_velocity = (lambda_sig/2) * inst_freq;  % Removed negative sign and abs
+
+% Adjust smoothing based on simulation type
+window_size = 50;
+switch simulation_type
+    case 1  % Ramp
+        smoothed_velocity = movmean(raw_velocity, window_size, 'omitnan');
+    case 2  % Target Reflectivity Change
+        smoothed_velocity = movmean(raw_velocity, window_size*2, 'omitnan');
+    case 3  % Combined Changes
+        smoothed_velocity = movmean(raw_velocity, window_size*3, 'omitnan');
+    otherwise
+        smoothed_velocity = movmean(raw_velocity, window_size, 'omitnan');
+end
+
+% Create main figure with simulation type info
+mainFig = figure('Name', sprintf('Advanced Interferometer Analysis - %s', ...
+                 getSimulationTypeString(simulation_type)), ...
+                 'NumberTitle', 'off', ...
+                 'Units', 'normalized', ...
+                 'Position', [0.1 0.1 0.8 0.8]);
+
+% Create STFT parameter control panel
+stftPanel = uipanel(mainFig, ...
+                    'Title', 'STFT Parameters', ...
+                    'Position', [0.85 0.1 0.14 0.8]);
+
+% Save variables to base workspace
+assignin('base', 'signal1', signal1);
+assignin('base', 'signal2', signal2);
+assignin('base', 'signal3', signal3);
+assignin('base', 'I', I);
+assignin('base', 'Q', Q);
+assignin('base', 'lambda_sig', lambda_sig);
+assignin('base', 'f_offset', f_offset);
+assignin('base', 't', t);
+assignin('base', 'v_t', v_t);
+assignin('base', 'Fs', Fs);
+assignin('base', 'raw_velocity', raw_velocity);
+assignin('base', 'smoothed_velocity', smoothed_velocity);
+assignin('base', 't_freq', t_freq);
+assignin('base', 'simulation_type', simulation_type);
+if has_intensity_data
+    assignin('base', 'intensity_variations', intensity_variations);
+end
+
+% Helper function to get simulation type string
+function str = getSimulationTypeString(type)
+    switch type
+        case 1
+            str = 'Ramp';
+        case 2
+            str = 'Target Reflectivity Change';
+        case 3
+            str = 'Combined Changes';
+        otherwise
+            str = 'Unknown';
+    end
+end
+
+% Parameter validation function
+function val = validateParameter(param, value)
+    switch param
+        case 'windowSize'
+            val = max(16, min(4096, value));
+            val = 2^floor(log2(val));
+        case 'overlap'
+            val = max(0, min(95, value));
+        case 'nfft'
+            val = max(16, min(8192, value));
+            val = 2^floor(log2(val));
+        otherwise
+            val = value;
+    end
+end
+
+% Create STFT parameter controls
+function createSTFTControls(panel)
+    global STFT_PARAMS;
+    
+    % Window Size Control
+    uicontrol(panel, 'Style', 'text', ...
+             'Position', [10 350 150 20], ...
+             'String', 'Window Size (points):', ...
+             'BackgroundColor', get(panel, 'BackgroundColor'));
+             
+    hWindowSize = uicontrol(panel, 'Style', 'edit', ...
+                           'Position', [70 330 60 20], ...
+                           'String', num2str(STFT_PARAMS.windowSize), ...
+                           'Callback', {@validateAndUpdateParam, 'windowSize'});
+    
+    % Window Size +/- buttons
+    uicontrol(panel, 'Style', 'pushbutton', ...
+             'Position', [140 330 20 20], ...
+             'String', '+', ...
+             'Callback', {@updateSTFTParam, 'windowSize', 'up', hWindowSize});
+             
+    uicontrol(panel, 'Style', 'pushbutton', ...
+             'Position', [40 330 20 20], ...
+             'String', '-', ...
+             'Callback', {@updateSTFTParam, 'windowSize', 'down', hWindowSize});
+    
+    % Overlap Control
+    uicontrol(panel, 'Style', 'text', ...
+             'Position', [10 290 150 20], ...
+             'String', 'Overlap (%):', ...
+             'BackgroundColor', get(panel, 'BackgroundColor'));
+             
+    hOverlap = uicontrol(panel, 'Style', 'edit', ...
+                        'Position', [70 270 60 20], ...
+                        'String', num2str(STFT_PARAMS.overlap), ...
+                        'Callback', {@validateAndUpdateParam, 'overlap'});
+    
+    % Overlap +/- buttons
+    uicontrol(panel, 'Style', 'pushbutton', ...
+             'Position', [140 270 20 20], ...
+             'String', '+', ...
+             'Callback', {@updateSTFTParam, 'overlap', 'up', hOverlap});
+             
+    uicontrol(panel, 'Style', 'pushbutton', ...
+             'Position', [40 270 20 20], ...
+             'String', '-', ...
+             'Callback', {@updateSTFTParam, 'overlap', 'down', hOverlap});
+    
+    % NFFT Control
+    uicontrol(panel, 'Style', 'text', ...
+             'Position', [10 230 150 20], ...
+             'String', 'NFFT:', ...
+             'BackgroundColor', get(panel, 'BackgroundColor'));
+             
+    hNFFT = uicontrol(panel, 'Style', 'edit', ...
+                      'Position', [70 210 60 20], ...
+                      'String', num2str(STFT_PARAMS.nfft), ...
+                      'Callback', {@validateAndUpdateParam, 'nfft'});
+    
+    % NFFT +/- buttons
+    uicontrol(panel, 'Style', 'pushbutton', ...
+             'Position', [140 210 20 20], ...
+             'String', '+', ...
+             'Callback', {@updateSTFTParam, 'nfft', 'up', hNFFT});
+             
+    uicontrol(panel, 'Style', 'pushbutton', ...
+             'Position', [40 210 20 20], ...
+             'String', '-', ...
+             'Callback', {@updateSTFTParam, 'nfft', 'down', hNFFT});
+    
+    % Window Type Control
+    uicontrol(panel, 'Style', 'text', ...
+             'Position', [10 170 150 20], ...
+             'String', 'Window Type:', ...
+             'BackgroundColor', get(panel, 'BackgroundColor'));
+             
+    hWindowType = uipanel(panel, ...
+                         'Position', [40 150 120 20], ...
+                         'BorderType', 'none');
+                     
+    uicontrol(hWindowType, 'Style', 'popupmenu', ...
+              'Position', [0 0 120 20], ...
+              'String', {'hanning', 'hamming', 'blackman', 'kaiser'}, ...
+              'Value', 1, ...
+              'Callback', {@updateWindowType});
+    
+    % Auto Update Toggle
+    uicontrol(panel, 'Style', 'togglebutton', ...
+             'Position', [40 100 120 30], ...
+             'String', 'Auto Update', ...
+             'Value', 1);
+    
+    % Update Button
+    uicontrol(panel, 'Style', 'pushbutton', ...
+             'Position', [40 50 120 30], ...
+             'String', 'Update Analysis', ...
+             'Callback', {@updateAnalysis});
+             
+    % Add simulation info
+    sim_type = evalin('base', 'simulation_type');
+    uicontrol(panel, 'Style', 'text', ...
+             'Position', [10 15 150 30], ...
+             'String', sprintf('Simulation Type:\n%s', getSimulationTypeString(sim_type)), ...
+             'BackgroundColor', get(panel, 'BackgroundColor'));
+end
+
+% Update STFT parameter callback
+function updateSTFTParam(~, ~, param, direction, hEdit)
+    global STFT_PARAMS;
+    
+    try
+        current_val = str2double(get(hEdit, 'String'));
+        if isnan(current_val)
+            current_val = STFT_PARAMS.(param);
+        end
+        
+        switch param
+            case 'windowSize'
+                if strcmp(direction, 'up')
+                    new_val = min(4096, current_val * 2);
+                else
+                    new_val = max(16, current_val / 2);
+                end
+                
+            case 'overlap'
+                step = 5;
+                if strcmp(direction, 'up')
+                    new_val = min(95, current_val + step);
+                else
+                    new_val = max(0, current_val - step);
+                end
+                
+            case 'nfft'
+                if strcmp(direction, 'up')
+                    new_val = min(8192, current_val * 2);
+                else
+                    new_val = max(STFT_PARAMS.windowSize, current_val / 2);
+                end
+        end
+        
+        new_val = validateParameter(param, new_val);
+        set(hEdit, 'String', num2str(new_val));
+        STFT_PARAMS.(param) = new_val;
+        
+        drawnow;
+        
+        autoUpdateHandle = findobj(gcf, 'Style', 'togglebutton', 'String', 'Auto Update');
+        if ~isempty(autoUpdateHandle) && get(autoUpdateHandle, 'Value')
+            updateAnalysis();
+        end
+    catch ME
+        warning('Error updating parameter: %s', ME.message);
+        set(hEdit, 'String', num2str(STFT_PARAMS.(param)));
+    end
+end
+
+% Window type update callback
+function updateWindowType(hObject, ~)
+    global STFT_PARAMS;
+    contents = get(hObject, 'String');
+    STFT_PARAMS.windowType = contents{get(hObject, 'Value')};
+    
+    autoUpdateHandle = findobj(gcf, 'Style', 'togglebutton', 'String', 'Auto Update');
+    if ~isempty(autoUpdateHandle) && get(autoUpdateHandle, 'Value')
+        updateAnalysis();
+    end
+end
+
+% Parameter validation callback
+function validateAndUpdateParam(hObject, ~, param)
+    global STFT_PARAMS;
+    try
+        newVal = str2double(get(hObject, 'String'));
+        if isnan(newVal)
+            set(hObject, 'String', num2str(STFT_PARAMS.(param)));
+            return;
+        end
+        
+        newVal = validateParameter(param, newVal);
+        set(hObject, 'String', num2str(newVal));
+        STFT_PARAMS.(param) = newVal;
+        
+        autoUpdateHandle = findobj(gcf, 'Style', 'togglebutton', 'String', 'Auto Update');
+        if ~isempty(autoUpdateHandle) && get(autoUpdateHandle, 'Value')
+            updateAnalysis();
+        end
+    catch
+        set(hObject, 'String', num2str(STFT_PARAMS.(param)));
+    end
+end
+
+% Helper function for window creation
+function w = get_window(type, size)
+    switch type
+        case 'hanning'
+            w = hanning(size);
+        case 'hamming'
+            w = hamming(size);
+        case 'blackman'
+            w = blackman(size);
+        case 'kaiser'
+            w = kaiser(size, 5);
+    end
+end
+
+% Main analysis update function
+function updateAnalysis(~, ~)
+    global STFT_PARAMS;
+    
+    % Get required variables from base workspace
+    signal1 = evalin('base', 'signal1');
+    signal2 = evalin('base', 'signal2');
+    signal3 = evalin('base', 'signal3');
+    I = evalin('base', 'I');
+    Q = evalin('base', 'Q');
+    lambda_sig = evalin('base', 'lambda_sig');
+    f_offset = evalin('base', 'f_offset');
+    t = evalin('base', 't');
+    v_t = evalin('base', 'v_t');
+    Fs = evalin('base', 'Fs');
+    raw_velocity = evalin('base', 'raw_velocity');
+    smoothed_velocity = evalin('base', 'smoothed_velocity');
+    t_freq = evalin('base', 't_freq');
+    simulation_type = evalin('base', 'simulation_type');
+    
+    % Create window using helper function
+    window = get_window(STFT_PARAMS.windowType, STFT_PARAMS.windowSize);
+    
+    % Perform STFT analysis
+    overlap_points = round(STFT_PARAMS.windowSize * STFT_PARAMS.overlap/100);
+    [S, F, T] = spectrogram(signal1, window, overlap_points, ...
+                           STFT_PARAMS.nfft, Fs, 'yaxis');
+    
+    % Find dominant frequency at each time point
+    [~, maxIdx] = max(abs(S), [], 1);
+    f_measured = F(maxIdx);
+    
+    % Calculate PDV velocity (corrected polarity)
+    v_pdv = (lambda_sig/2) * (f_measured - f_offset);  % Updated for correct polarity
+    
+    % Update plots with specific positions
+    figure(gcf);
+    
+    % Spectrogram plot with PDV velocity line overlay
+    subplot('Position', [0.05 0.55 0.35 0.35]);
+    imagesc(T*1e9, F/1e6, 10*log10(abs(S)));
+    hold on;
+    % Add PDV velocity line on spectrogram (corrected formula)
+    plot(T*1e9, (v_pdv*2/lambda_sig + f_offset)/1e6, 'k-', 'LineWidth', 2);
+    hold off;
+    axis xy;
+    colormap('jet');
+    xlabel('Time [ns]');
+    ylabel('Frequency [MHz]');
+    title(sprintf('Spectrogram Analysis - %s', getSimulationTypeString(simulation_type)));
+    c = colorbar;
+    c.Label.String = 'Power/Frequency [dB/Hz]';
+    
+    % Velocity comparison plot
+    subplot('Position', [0.45 0.55 0.35 0.35]);
+    plot(t*1e9, v_t, 'k--', 'LineWidth', 1, 'DisplayName', 'True');
+    hold on;
+    plot(t_freq*1e9, raw_velocity, 'm:', 'LineWidth', 1, 'DisplayName', 'Quad Raw');
+    plot(t_freq*1e9, smoothed_velocity, 'r-', 'LineWidth', 2, 'DisplayName', 'Quad Smooth');
+    plot(T*1e9, v_pdv, 'b--', 'LineWidth', 1.5, 'DisplayName', 'PDV');
+    hold off;
+    xlabel('Time [ns]');
+    ylabel('Velocity [m/s]');
+    title('Velocity Comparison');
+    legend('show');
+    grid on;
+    
+    % Original Signals plot
+    subplot('Position', [0.05 0.1 0.25 0.35]);
+    plot(t*1e9, signal1, 'b-', 'LineWidth', 1, 'DisplayName', 'Signal 1');
+    hold on;
+    plot(t*1e9, signal2, 'r-', 'LineWidth', 1, 'DisplayName', 'Signal 2');
+    plot(t*1e9, signal3, 'g-', 'LineWidth', 1, 'DisplayName', 'Signal 3');
+    hold off;
+    xlabel('Time [ns]');
+    ylabel('Voltage [V]');
+    title('Original Detector Signals');
+    legend('show');
+    grid on;
+    
+    % Lissajous plot
+    subplot('Position', [0.35 0.1 0.25 0.35]);
+    plot(I, Q, 'b.', 'MarkerSize', 1);
+    xlabel('I');
+    ylabel('Q');
+    title('Lissajous Plot');
+    axis equal;
+    grid on;
+    
+    % Frequency tracking
+    subplot('Position', [0.65 0.1 0.15 0.35]);
+    plot(T*1e9, f_measured/1e6, 'k-', 'LineWidth', 1.5);
+    xlabel('Time [ns]');
+    ylabel('Frequency [MHz]');
+    title('Frequency Tracking');
+    grid on;
+    
+    drawnow;
+end
+
+% Create controls and perform initial analysis
+createSTFTControls(stftPanel);
+updateAnalysis();
